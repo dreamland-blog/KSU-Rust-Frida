@@ -1,0 +1,104 @@
+#!/system/bin/sh
+# kfm-standalone - 无需 KSU 模块的独立版 KFM 命令
+# 放在 /data/local/tmp/kfm 即可使用
+
+set -e
+
+RUNTIME_DIR="/data/adb/kfm"
+RUSTFRIDA_BIN="/data/local/tmp/rustfrida"
+SCRIPT_DIR="/data/local/tmp"
+
+# 确保 runtime 目录
+mkdir -p "$RUNTIME_DIR/run" "$RUNTIME_DIR/logs" 2>/dev/null
+
+log_kfm() { echo "[$(date '+%H:%M:%S')] $1" >> "$RUNTIME_DIR/logs/kfm.log" 2>/dev/null; }
+
+find_app_pid() {
+    pidof "$1" 2>/dev/null | awk '{print $1}'
+}
+
+resolve_script() {
+    local s="$1"
+    [ -f "$s" ] && echo "$s" && return
+    [ -f "$SCRIPT_DIR/$s" ] && echo "$SCRIPT_DIR/$s" && return
+    [ -f "$SCRIPT_DIR/${s}.js" ] && echo "$SCRIPT_DIR/${s}.js" && return
+    [ -f "/sdcard/$s" ] && echo "/sdcard/$s" && return
+    [ -f "/sdcard/${s}.js" ] && echo "/sdcard/${s}.js" && return
+    echo ""
+}
+
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    spawn)
+        PKG="$1"; shift 2>/dev/null || true
+        [ -z "$PKG" ] && { echo "用法: kfm spawn <包名> [脚本.js]"; exit 1; }
+        SCRIPTS=""
+        for arg in "$@"; do
+            resolved=$(resolve_script "$arg")
+            [ -z "$resolved" ] && { echo "[-] 脚本不存在: $arg"; exit 2; }
+            SCRIPTS="$SCRIPTS --load-script $resolved"
+        done
+        echo "[+] Spawn 模式: $PKG"
+        exec "$RUSTFRIDA_BIN" --spawn "$PKG" $SCRIPTS 2>&1
+        ;;
+    inject|attach)
+        PKG="$1"; shift 2>/dev/null || true
+        [ -z "$PKG" ] && { echo "用法: kfm inject <包名> <脚本.js>"; exit 1; }
+        PID=$(find_app_pid "$PKG")
+        if [ -z "$PID" ]; then
+            echo "[*] $PKG 未运行，尝试启动..."
+            monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+            sleep 3
+            PID=$(find_app_pid "$PKG")
+        fi
+        [ -z "$PID" ] && { echo "[-] 无法找到 $PKG 进程"; exit 3; }
+        SCRIPTS=""
+        for arg in "$@"; do
+            resolved=$(resolve_script "$arg")
+            [ -z "$resolved" ] && { echo "[-] 脚本不存在: $arg"; exit 2; }
+            SCRIPTS="$SCRIPTS --load-script $resolved"
+        done
+        echo "[+] 注入 $PKG (PID $PID)"
+        exec "$RUSTFRIDA_BIN" --pid "$PID" $SCRIPTS 2>&1
+        ;;
+    stop)
+        PID=$(pidof rustfrida 2>/dev/null | tr -d '\r')
+        if [ -n "$PID" ]; then
+            kill -9 $PID 2>/dev/null
+            echo "[+] 已停止 rustfrida (PID $PID)"
+        else
+            echo "[*] rustfrida 未在运行"
+        fi
+        ;;
+    status)
+        PID=$(pidof rustfrida 2>/dev/null | tr -d '\r')
+        if [ -n "$PID" ]; then
+            echo "[+] rustfrida 运行中 (PID $PID)"
+        else
+            echo "[-] rustfrida 未运行"
+        fi
+        ;;
+    log)
+        tail -f "$RUNTIME_DIR/logs/kfm.log" 2>/dev/null || echo "无日志"
+        ;;
+    help|--help|-h|*)
+        cat <<'EOF'
+KFM 独立版 — rustFrida 命令行管理
+
+用法:
+    kfm spawn <包名> [hook.js]     Spawn 模式注入（从启动开始 hook）
+    kfm inject <包名> <hook.js>    Attach 模式注入（注入运行中的 App）
+    kfm stop                       停止 rustfrida
+    kfm status                     查看运行状态
+    kfm log                        查看日志
+    kfm help                       帮助
+
+示例:
+    kfm spawn com.airbnb.android /sdcard/hook.js
+    kfm inject com.zhiliaoapp.musically /sdcard/hook2.js
+    kfm stop
+EOF
+        ;;
+esac

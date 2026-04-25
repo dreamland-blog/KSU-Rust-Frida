@@ -1,0 +1,6 @@
+id=ksu-frida-manager
+name=KSU-Frida Manager (KFM) + rustFrida
+version=v2.0.0
+versionCode=200
+author=KFM Team
+description=Frida lifecycle management powered by rustFrida engine. No auto-start, no boot loop. Single binary with QuickJS, spawn mode, HTTP RPC, stealth hooks.

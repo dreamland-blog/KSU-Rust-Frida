@@ -1,0 +1,63 @@
+#!/sbin/sh
+
+#################
+# Initialization
+#################
+
+umask 022
+
+# Global vars
+TMPDIR=/dev/tmp
+PERSISTDIR=/sbin/.magisk/mirror/persist
+
+rm -rf $TMPDIR 2>/dev/null
+mkdir -p $TMPDIR
+
+# echo before loading util_functions
+ui_print() { echo "$1"; }
+
+require_new_magisk() {
+  ui_print "*******************************"
+  ui_print " Please install Magisk v20.4+! "
+  ui_print "*******************************"
+  exit 1
+}
+
+##############
+# Environment
+##############
+
+OUTFD=$2
+ZIPFILE=$3
+
+mount /data 2>/dev/null
+
+# Load utility functions
+[ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
+. /data/adb/magisk/util_functions.sh
+[ $MAGISK_VER_CODE -lt 20400 ] && require_new_magisk
+
+setup_flashable $0
+
+############
+# Main
+############
+
+# Default permissions
+umask 022
+
+# Extract module
+ui_print "- Extracting module files"
+unzip -o "$ZIPFILE" -d $MODPATH >&2
+
+# Callbacks
+. $MODPATH/customize.sh
+
+# Handle replace folders
+for TARGET in $REPLACE; do
+  ui_print "- Replace target: $TARGET"
+  mktouch $MODPATH$TARGET/.replace
+done
+
+# Auto set permissions
+set_permissions

@@ -1,0 +1,108 @@
+#!/system/bin/sh
+# /system/bin/kfm - KSU-Frida Manager 命令行入口
+# 整合 rustFrida 引擎，统一管理 hook 生命周期
+#
+# 架构：
+#   App/终端 → kfm (本脚本) → 子脚本 → rustfrida 二进制
+#   App ←→ rustfrida HTTP RPC (直连，高性能)
+
+set -e
+
+MODULE_DIR="/data/adb/modules/ksu-frida-manager"
+SCRIPTS_DIR="$MODULE_DIR/scripts"
+RUNTIME_DIR="/data/adb/kfm"
+# 加载公共函数（common.sh 自动设置 RUSTFRIDA_BIN）
+. "$SCRIPTS_DIR/lib/common.sh"
+
+# 非 root 直接拒绝
+if [ "$(id -u)" != "0" ]; then
+    json_error "kfm requires root. Use: su -c \"kfm ...\""
+    exit 1
+fi
+
+# 确保 runtime 目录存在
+mkdir -p "$RUNTIME_DIR/run" "$RUNTIME_DIR/logs" "$RUNTIME_DIR/scripts"
+chmod 700 "$RUNTIME_DIR"
+
+# 分发子命令
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    start)       exec sh "$SCRIPTS_DIR/kfm-start.sh" "$@" ;;
+    stop)        exec sh "$SCRIPTS_DIR/kfm-stop.sh" "$@" ;;
+    status)      exec sh "$SCRIPTS_DIR/kfm-status.sh" "$@" ;;
+    restart)     sh "$SCRIPTS_DIR/kfm-stop.sh" ; exec sh "$SCRIPTS_DIR/kfm-start.sh" "$@" ;;
+    inject)      exec sh "$SCRIPTS_DIR/kfm-inject.sh" "$@" ;;
+    spawn)       exec sh "$SCRIPTS_DIR/kfm-spawn.sh" "$@" ;;
+    watch)       exec sh "$SCRIPTS_DIR/kfm-watch.sh" "$@" ;;
+    rpc)         exec sh "$SCRIPTS_DIR/kfm-rpc.sh" "$@" ;;
+    analyze)
+        SUBCMD="${1:-status}"
+        shift 2>/dev/null || true
+        case "$SUBCMD" in
+            enter)  exec sh "$SCRIPTS_DIR/kfm-analyze-enter.sh" "$@" ;;
+            exit)   exec sh "$SCRIPTS_DIR/kfm-analyze-exit.sh" "$@" ;;
+            status) cat "$RUNTIME_DIR/run/analyze-mode.lock" 2>/dev/null || echo '{"mode":"normal"}' ;;
+            *) json_error "unknown analyze subcommand: $SUBCMD" ; exit 1 ;;
+        esac
+        ;;
+    log)         exec sh "$SCRIPTS_DIR/kfm-log.sh" "$@" ;;
+    stealth)     exec sh "$SCRIPTS_DIR/kfm-stealth.sh" "$@" ;;
+    version)
+        RFVER=$("$RUSTFRIDA_BIN" --version 2>/dev/null || echo "not found")
+        cat <<EOF
+{"module":"v2.0.0","rustfrida":"$RFVER"}
+EOF
+        ;;
+    help|--help|-h)
+        cat <<EOF
+KSU-Frida Manager (KFM) v2.0.0 - Powered by rustFrida
+
+USAGE:
+    kfm <COMMAND> [args]
+
+LIFECYCLE:
+    start [--rpc-port PORT]    Start rustfrida server (default RPC port 28042)
+    stop                       Stop rustfrida and cleanup
+    restart                    Restart rustfrida
+    status                     Show current status as JSON
+
+INJECTION:
+    inject <pkg> <script>      Inject JS into running app (attach mode)
+    spawn <pkg> [script]       Spawn app and inject from start (zymbiote)
+    watch <so_name> <script>   Wait for SO load, then inject
+
+ANALYSIS MODE:
+    analyze enter              Disable conflicting modules + reboot
+    analyze exit               Restore modules + reboot
+    analyze status             Show current mode
+
+STEALTH:
+    stealth [normal|wxshadow|recomp]   Set hook memory protection mode
+
+RPC:
+    rpc call <func> [args...]  Call JS function via HTTP RPC
+    rpc eval <code>            Evaluate JS code via RPC
+
+UTILITY:
+    log [server|kfm]           Tail logs
+    version                    Show versions
+    help                       Show this help
+
+EXAMPLES:
+    kfm start                          # Start rustfrida with RPC
+    kfm inject com.app /sdcard/hook.js # Attach and inject
+    kfm spawn com.app hook.js          # Spawn with hook
+    kfm watch libnative.so hook.js     # Inject when SO loads
+    kfm analyze enter                  # Safe mode for deep analysis
+    kfm stealth wxshadow              # Enable shadow page hooks
+    kfm rpc call myFunc arg1 arg2      # Call exported JS function
+
+EOF
+        ;;
+    *)
+        json_error "unknown command: $CMD (try: kfm help)"
+        exit 1
+        ;;
+esac

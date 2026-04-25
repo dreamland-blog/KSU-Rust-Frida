@@ -1,0 +1,20 @@
+{
+  "rustfrida": {
+    "listen": "127.0.0.1",
+    "rpc_port": 28042,
+    "stealth_mode": "normal",
+    "auto_selinux_fix": true
+  },
+  "conflict_modules": [
+    "zygisksu",
+    "zygisk_vector",
+    "playintegrityfix",
+    "pifs_cleverestech",
+    "YH_YC"
+  ],
+  "safety": {
+    "min_uptime_seconds": 30,
+    "startup_delay_seconds": 3,
+    "kill_timeout_seconds": 5
+  }
+}

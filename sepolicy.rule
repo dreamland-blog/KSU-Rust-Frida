@@ -1,0 +1,14 @@
+# KFM SELinux rules
+# 允许 rustfrida 以 root 身份 ptrace 目标进程
+allow magisk self:process { execmem execstack };
+allow magisk * : process { ptrace };
+allow magisk app_data_file:dir { search read open };
+allow magisk app_data_file:file { read open getattr };
+allow magisk zygote:process { ptrace sigstop sigkill };
+
+# 允许写日志和 runtime 文件
+allow magisk kfm_runtime:dir { create write add_name remove_name };
+allow magisk kfm_runtime:file { create write open append read unlink };
+
+# 允许 Unix socket 通信（rustfrida ↔ agent）
+allow magisk appdomain:unix_stream_socket { connectto read write };
