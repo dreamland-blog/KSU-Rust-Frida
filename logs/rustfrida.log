@@ -1,0 +1,18 @@
+
+ [1m[36m╔══════════════════════════════════════╗[0m
+ [1m[36m║[0m  [1m      rustFrida v0.1.0             [0m[1m[36m║[0m
+ [1m[36m║[0m  [2m  ARM64 Dynamic Instrumentation    [0m[1m[36m║[0m
+ [1m[36m╚══════════════════════════════════════╝[0m
+
+[1m[34m [*][0m 正在预注入 Zygote...
+[1m[34m [*][0m 正在修补 SELinux 策略...
+[1m[34m [*][0m 找到 1 个新 zygote 进程
+[1m[36m [→][0m 正在注入 zymbiote 到 zygote64 (pid=973)...
+[1m[33m [!][0m setArgV0 指针已被替换（already patched），slot at 0x71153a58
+[1m[32m [✓][0m Zymbiote 注入成功: zygote64 (pid=973)
+[1m[32m [✓][0m Zygote 预注入完成，spawn 命令将即时生效
+[1m[32m [✓][0m RPC HTTP server listening on 0.0.0.0:28042
+[1m[34m [*][0m   curl -X POST http://0.0.0.0:28042/rpc/<session>/<method> -d '[args]'
+
+  [1m[36mServer 模式已启动[0m [2m— 输入 help 查看命令, spawn/attach 开始注入[0m
+
