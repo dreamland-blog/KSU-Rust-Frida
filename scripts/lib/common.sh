@@ -6,13 +6,11 @@ RUNTIME_DIR="/data/adb/kfm"
 MODULE_DIR="/data/adb/modules/ksu-frida-manager"
 KFM_LOG="$RUNTIME_DIR/logs/kfm.log"
 
-# rustfrida 二进制路径：优先模块物理路径，fallback overlay 或 runtime
-if [ -x "$MODULE_DIR/system/bin/rustfrida" ]; then
-    RUSTFRIDA_BIN="$MODULE_DIR/system/bin/rustfrida"
-elif [ -x "/system/bin/rustfrida" ]; then
+# rustfrida 二进制路径：优先 /system/bin（overlay），fallback 模块目录
+if [ -x "/system/bin/rustfrida" ]; then
     RUSTFRIDA_BIN="/system/bin/rustfrida"
 else
-    RUSTFRIDA_BIN="/data/adb/kfm/rustfrida"
+    RUSTFRIDA_BIN="$MODULE_DIR/system/bin/rustfrida"
 fi
 
 # JSON 错误输出
