@@ -1,4 +1,4 @@
-# KSU-Frida Manager v2.0.0 — Powered by rustFrida
+# KSU-Frida Manager v2.0.0 — Powered by rustFrida&Trace
 
 > 整合 [rustFrida](../rustFrida-master/) 引擎的 KSU/Magisk 模块，提供完整的 Android ARM64 动态插桩管理方案。
 > 解决 frida-server 开机卡 logo 问题，单一二进制，手机端按需管理。
