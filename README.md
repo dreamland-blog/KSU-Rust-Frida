@@ -663,34 +663,30 @@ su -c "kfm start"
 ## 目录结构
 
 ```
-ksu-frida-manager/
-├── module.prop                    # 模块元数据
-├── META-INF/                      # 刷入框架
-├── customize.sh                   # 安装脚本
-├── service.sh                     # 开机清理 (不启动 rustfrida)
-├── post-fs-data.sh                # 开机前期 (建目录)
-├── uninstall.sh                   # 卸载清理
-├── sepolicy.rule                  # SELinux 规则
-├── build.sh                       # 构建脚本
-├── system/bin/
-│   ├── kfm                        # 命令调度器
-│   └── rustfrida                  # 引擎二进制
-├── scripts/                       # 子命令脚本
-│   ├── kfm-start.sh
-│   ├── kfm-stop.sh
-│   ├── kfm-status.sh
-│   ├── kfm-inject.sh
-│   ├── kfm-spawn.sh
-│   ├── kfm-watch.sh
-│   ├── kfm-rpc.sh
-│   ├── kfm-analyze-enter.sh
-│   ├── kfm-analyze-exit.sh
-│   ├── kfm-log.sh
-│   ├── kfm-stealth.sh
-│   └── lib/ (common.sh, logging.sh, json.sh)
-└── assets/
-    ├── default-config.json
-    └── example-scripts/ (hello.js, bypass-ssl-pinning.js, ...)
+KSUhook/
+├── deploy.sh                 # 一键部署引擎+脚本到设备
+├── run.sh                    # 注入目标 App (attach / spawn / 后台)
+│
+├── hook.js                   # 通用 SSL Pinning 解钉 (Conscrypt/OkHttp/WebView...)
+├── hook2.js                  # TikTok 抓包 (native Cronet/mssdk hook)
+├── hook_keeta_capture.js     # Keeta mtgsig 抓取 (本仓库重点)
+├── scripts/
+│   ├── qbdi.js               # Qbdi 高层封装: 读写寄存器/内存 + QBDI Trace
+│   ├── bypass_and_modify.js  # Tier1 实战: 任意地址读写寄存器/内存篡改 (自包含)
+│   ├── qbdi_trace.js         # QBDI 指令级 Trace 模板 (需 --qbdi 构建)
+│   ├── grab_all.js           # Grab 更新绕过 + SSL + 网络监控 (规范写法范例)
+│   ├── grab1.js / grab2.js   # Grab 更新绕过 / SSL 解钉
+│   └── Trip.js               # Trip.com SSL 解钉
+├── tools/
+│   └── trace_decode.py       # QBDI trace_bundle.pb 离线解码器 (零依赖, capstone 可选反汇编)
+│
+├── rustFrida-master/         # rustfrida 引擎源码 + 预编译二进制
+│   ├── quickjs-hook/         # QuickJS 脚本运行时 (Java/Native/qbdi JS API)
+│   ├── qbdi/                 # QBDI 静态库 (libQBDI.a + 头文件)
+│   └── qbdi-helper/          # QBDI 封装 -> qbdi_helper.so (trace bundle 写盘)
+├── ksu-frida-manager/        # KFM — 设备端常驻管理模块 (可选, 见下)
+└── docs/
+    └── 使用文档.md           # ★ 详细使用手册 (部署/KFM/QBDI/排错)
 ```
 
 ---
@@ -703,6 +699,203 @@ ksu-frida-manager/
 | 架构 | arm64-v8a (ARM64 only) |
 | Android | 9 (API 28) ~ 17 |
 | 验证设备 | Pixel 6 Pro (Android 14/16, KernelSU 3.2.0 + SUSFS) |
+
+### Tier 2 — QBDI 指令级 Trace(需 `./deploy.sh --qbdi`)
+
+> [!IMPORTANT]
+> QBDI 是**编译期 feature,预编译二进制默认没开**。必须 `./deploy.sh --qbdi` 重新编译部署,全局 `qbdi` 对象与 `Qbdi.setupTrace` 才可用。源码在 `rustFrida-master/{qbdi,qbdi-helper}/`。
+
+和标准 Frida / 网上教程的关键差异:
+
+- 不是 `new Qbdi.VM()` + 逐指令 JS 回调(那样每条指令回 JS 会 ANR)。Trace 由原生 `qbdi_helper.so` 把「指令 + 寄存器 + 内存访问 + call/ret」写成 **protobuf trace bundle 落盘**到**应用私有目录**(默认 `/data/data/<包名>/trace_bundle.pb`),拉回来**离线解码**。
+- QBDI 在自己的 VM 里**重放**目标代码,所以流程是 `Interceptor.attach` 命中 → 在 VM 内 `qbdi.call(...)` 重放并产出 trace。
+
+一键 Trace(`run.sh` 自动拼接 `qbdi.js` + 入口脚本):
+
+```bash
+# 1. 带 QBDI 编译部署 (需 Rust + Android NDK; 仓库的预编译二进制已带 QBDI)
+./deploy.sh --qbdi
+
+# 2. 一键追踪某 native 函数 (偏移或导出符号都行)
+./run.sh --trace     com.sankuai.sailor.afooddelivery libmtguard.so 0x5b120
+./run.sh --trace     com.zhiliaoapp.musically         libc.so       open
+./run.sh --trace-mem com.sankuai.sailor.afooddelivery libmtguard.so 0x5b120   # 含内存访问
+
+# 3. 触发目标逻辑后, 一键拉取 + 离线解码
+./run.sh --pull-trace com.sankuai.sailor.afooddelivery
+```
+
+### 离线解码 trace bundle(`tools/trace_decode.py`)
+
+落盘的 `trace_bundle.pb` = 4 字节 magic `TRB1` + 一串 length-delimited protobuf 事件(指令地址 / 内存访问 / 外部返回 / 动态代码块 / 寄存器快照 / 模块元数据)。解码器零依赖,装了 `capstone` 还能反汇编指令流:
+
+```bash
+# 手动拉取 (trace 在应用私有目录, 需 su)
+adb shell "su -c 'cat /data/data/<包名>/trace_bundle.pb'" > trace_bundle.pb
+
+python3 tools/trace_decode.py trace_bundle.pb                 # 概览 + 顺序事件
+python3 tools/trace_decode.py trace_bundle.pb --insn --disasm # 仅指令流 + 反汇编 (pip install capstone)
+python3 tools/trace_decode.py trace_bundle.pb --mem           # 仅内存读写
+python3 tools/trace_decode.py trace_bundle.pb --rebase        # 地址显示为 模块base+偏移
+python3 tools/trace_decode.py trace_bundle.pb --summary       # 只看各类事件计数
+python3 tools/trace_decode.py trace_bundle.pb --dump-chunks ./code  # 导出动态执行的代码镜像
+```
+
+脚本里手动用 `Qbdi` 封装(等价于 `run.sh --trace` 内部逻辑):
+
+```javascript
+var m = Process.findModuleByName('libmtguard.so');
+var target = m.base.add(0x5b120);                          // 可执行地址(函数入口)
+Qbdi.setupTrace(target, '/data/data/<包名>');             // target 必须可执行; attach 模式必须传输出目录
+Qbdi.hookWithQbdi(target);                                 // 命中即在 VM 内重放并产 trace
+// ... 触发后 ...
+Qbdi.stopTrace();                                          // 内部会 qbdi.shutdown() flush + 发布 trace_bundle.pb
+```
+
+> 真机实测验证过的三个铁律(否则 trace 出不来):
+> ① `setupTrace`/`registerTraceCallbacks` 的 target 必须是**可执行地址**,传模块基址会 `not found in /proc/self/maps`;
+> ② attach(`-p PID`)模式默认输出目录为空,**必须显式传**应用可写目录(如 `/data/data/<包名>`);
+> ③ 必须 `qbdi.shutdown()`(`Qbdi.stopTrace()` 已内置)才会同步 flush 并发布 `trace_bundle.pb`。
+
+底层 `qbdi.*` 扁平 API(`Qbdi` 封装即基于此):`newVM / destroyVM / allocateVirtualStack / addInstrumentedRange / addInstrumentedModuleFromAddr / recordMemoryAccess / registerTraceCallbacks / unregisterTraceCallbacks / run / call / getGPR / setGPR / getFPR / setFPR / lastError`;常量 `MEMORY_READ|WRITE|READ_WRITE`、`REG_PC|LR|SP|BP|FLAG|RETURN`。
+
+### 性能与避坑
+
+> [!WARNING]
+> DBI 指令级插桩开销极大(目标函数可慢 10~50 倍),对高频/密集计算逻辑(如 OLLVM 控制流平坦化)易触发 ANR 或写盘爆量。
+
+- **只追小范围**:`setupTrace(base, size)` 圈定单个 `.so` 或函数区间,别全量插桩系统库。
+- 用完及时 `Qbdi.stopTrace()`,并清理 `/data/data/<包名>/trace_bundle.pb*`(含分片 `.s*.part*`)。
+- `qbdi` 未定义 / `newVM` 返回 null / `lastError()` 报 "blob not configured" → 引擎没带 QBDI feature,回到 `./deploy.sh --qbdi`。
+- App 闪退 `SIGSEGV (SEGV_ACCERR)`:多半插桩到了非可执行页,确认 `setupTrace` 的 base/size 只覆盖目标 SO 的可执行段。
+
+---
+
+## 脚本语法铁律(重要)
+
+rustfrida 跑 **QuickJS**,与标准 Frida (V8) 有三条必须遵守的差异。**所有仓库内脚本都遵循此规范**(参考 `scripts/grab_all.js`):
+
+| # | 标准 Frida | rustfrida | 用错后果 |
+|---|-----------|-----------|----------|
+| 1 | `.implementation =` | `.impl =`(`.implementation` 是其别名,也可用) | — |
+| 2 | `this.方法名(args)` 调原方法 | **`this.$orig(args)`** | 用错 → **无限递归崩溃** |
+| 3 | `Java.registerClass()` | 不支持 | 改为直接 hook 系统类 |
+
+`.overload(...)` **支持**,用法同 Frida(`.overload('java.lang.String','int')` 或裸 JNI 签名 `.overload('(Ljava/lang/String;)V')`)。
+
+其它注意点:
+
+| 问题 | 说明 |
+|------|------|
+| 多个 `Java.perform()` | 只执行**最后一个**,所有 Java hook 必须合并进同一个 |
+| `setTimeout` / `Script.nextTick` | 不存在,需 polyfill |
+| `Java.enumerateLoadedClasses` | 可用(`hook.js` 用它扫混淆 pinner) |
+| Java 反射(`getDeclaredMethods`) | 不可用,用方法名穷举替代 |
+
+### 标准模板
+
+```javascript
+'use strict';
+
+// Polyfill: rustfrida 用 Java.ready 代替 Java.perform
+if (typeof Java !== 'undefined' && typeof Java.perform === 'undefined'
+    && typeof Java.ready === 'function') {
+    Java.perform = Java.ready;
+}
+
+Java.perform(function () {
+    var Foo = Java.use('com.example.Foo');
+
+    // 正确
+    Foo.bar.overload('int').impl = function (x) {
+        console.log('hooked: ' + x);
+        return this.$orig(x);     // 调原方法
+    };
+
+    // 错误 — 无限递归!
+    // Foo.bar.impl = function (x) { return this.bar(x); };
+});
+```
+
+---
+
+## SSL Pinning 解钉
+
+`hook.js` 是通用解钉脚本,覆盖:Conscrypt `TrustManagerImpl.verifyChain` / `Platform.checkServerTrusted`、`SSLContext.init`、OkHttp `CertificatePinner`(含 R8 混淆变体扫描)、`HostnameVerifier`、`NetworkSecurityTrustManager`、WebView `onReceivedSslError`。
+
+```bash
+./run.sh com.airbnb.android hook.js
+# 配合 Charles/Burp 设系统代理即可抓 HTTPS
+```
+
+---
+
+## KFM 设备端常驻模块(可选)
+
+`ksu-frida-manager/` 是把 rustfrida 封装成 Magisk/KSU 模块的方案,装上后可在设备上直接用 `kfm` 命令注入(适合不接电脑的场景)。
+
+### 安装
+
+```bash
+# 1. 把二进制塞进模块再打包
+cp rustFrida-master/target/aarch64-linux-android/release/rustfrida \
+   ksu-frida-manager/system/bin/rustfrida
+cd ksu-frida-manager && zip -r ../ksu-frida-manager.zip . -x '*.DS_Store' && cd ..
+
+# 2. 推送并安装 (Magisk)
+adb push ksu-frida-manager.zip /sdcard/
+adb shell "su -c 'magisk --install-module /sdcard/ksu-frida-manager.zip'"
+adb shell "su -c 'reboot'"
+
+# 2'. KernelSU
+adb shell "su -c 'ksud module install /sdcard/ksu-frida-manager.zip'"
+adb shell "su -c 'reboot'"
+```
+
+### KSU 额外配置(重启后执行一次)
+
+> [!IMPORTANT]
+> KSU 的 `/system/bin` overlay 可能不生效,需手动链接到 KSU 的 PATH 目录。Magisk 无需此步。
+
+```bash
+adb shell "su -c '
+  cp /data/adb/modules/ksu-frida-manager/system/bin/kfm      /data/adb/kfm/kfm
+  cp /data/adb/modules/ksu-frida-manager/system/bin/rustfrida /data/adb/kfm/rustfrida
+  chmod 755 /data/adb/kfm/kfm /data/adb/kfm/rustfrida
+  ln -sf /data/adb/kfm/kfm      /data/adb/ksu/bin/kfm
+  ln -sf /data/adb/kfm/rustfrida /data/adb/ksu/bin/rustfrida
+'"
+```
+
+### kfm 命令
+
+```bash
+kfm inject <包名> <脚本>            # attach 注入
+kfm inject <包名> <脚本1> <脚本2>   # 多脚本 (自动合并)
+kfm spawn  <包名> <脚本>            # spawn 注入
+kfm start | stop                   # 启停常驻 server
+```
+
+---
+
+## FAQ
+
+| 问题 | 解决 |
+|------|------|
+| `rustfrida 未部署` | 先 `./deploy.sh` |
+| hook 后 App 无限循环/崩溃 | 调原方法用错了 — 把 `this.方法名()` 改成 `this.$orig()` |
+| hook 不生效 | 确认用 `.impl`/`.implementation`;spawn 大型 App 易超时,改 attach |
+| 多脚本只执行一个 | 合并到一个文件,只保留一个 `Java.perform` |
+| `registerClass` 报错 | 不支持,改为直接 hook 系统类(如 `TrustManagerImpl.verifyChain`) |
+| `kfm: not found` (KSU) | 执行上方「KSU 额外配置」链接到 `/data/adb/ksu/bin/` |
+| `kfm spawn` 超时 | 大型 App 用 `kfm inject`(先启动再注入) |
+| 找不到目标方法 | App 可能混淆/分包,先用 `Java.enumerateLoadedClasses` 确认类名 |
+| `qbdi is not defined` / `newVM` 返回 null | 引擎没带 QBDI feature,用 `./deploy.sh --qbdi` 重新编译部署 |
+| QBDI trace 导致 App 卡死/ANR | 缩小插桩范围(只圈单个函数),用完及时 `unregisterTraceCallbacks`+`destroyVM` |
+
+---
+
+
 
 ---
 
